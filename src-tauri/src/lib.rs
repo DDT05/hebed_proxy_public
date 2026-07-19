@@ -1,260 +1,329 @@
+use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::Mutex;
-use tauri::State;
+use tauri::{Manager, State};
 
-// -- type aliases for readability --
-type WinBool = i32;
-type WinHandle = isize;
-type WinDword = u32;
-type WinLparam = isize;
-type WinWparam = usize;
-type WinResult = isize;
-
+// ─── State ───────────────────────────────────────────────
 struct ProxyState {
     child: Mutex<Option<Child>>,
-    addon_path: String,
+    addon_path: Mutex<String>,
+}
+
+// ─── Windows-specific ────────────────────────────────────
+#[cfg(target_os = "windows")]
+mod windows_api {
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    pub fn broadcast_proxy_change() {
+        unsafe {
+            let user32 = libloading::Library::new("user32.dll").unwrap();
+            let send_msg: libloading::Symbol<
+                unsafe extern "system" fn(isize, u32, usize, *const u16, u32, u32, *mut u32) -> isize,
+            > = user32.get(b"SendMessageTimeoutW").unwrap();
+            let msg: Vec<u16> =
+                "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\0"
+                    .encode_utf16()
+                    .collect();
+            send_msg(0xFFFF, 0x001A, 0, msg.as_ptr(), 0, 5000, std::ptr::null_mut());
+
+            let wininet = libloading::Library::new("wininet.dll").unwrap();
+            let set_option: libloading::Symbol<
+                unsafe extern "system" fn(isize, u32, *const u8, u32) -> i32,
+            > = wininet.get(b"InternetSetOptionW").unwrap();
+            set_option(0, 39, std::ptr::null(), 0);
+            set_option(0, 37, std::ptr::null(), 0);
+        }
+    }
+
+    pub fn set_proxy_registry(enabled: bool) -> Result<(), String> {
+        use winreg::enums::*;
+        use winreg::RegKey;
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let (key, _disp) = hkcu
+            .create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+            .map_err(|e| format!("Registry error: {}", e))?;
+        if enabled {
+            key.set_value("ProxyEnable", &1u32).map_err(|e| e.to_string())?;
+            key.set_value("ProxyServer", &"localhost:8080").map_err(|e| e.to_string())?;
+        } else {
+            key.set_value("ProxyEnable", &0u32).map_err(|e| e.to_string())?;
+        }
+        broadcast_proxy_change();
+        Ok(())
+    }
+
+    pub fn install_ca_cert() -> Result<String, String> {
+        let cert_path = dirs::home_dir()
+            .ok_or("Cannot find home directory")?
+            .join(".mitmproxy")
+            .join("mitmproxy-ca-cert.cer");
+        if !cert_path.exists() {
+            return Err(format!("CA cert not found at {}. Start proxy once to generate it.", cert_path.display()));
+        }
+        let output = Command::new("certutil")
+            .args(["-addstore", "-user", "Root"])
+            .arg(cert_path.to_str().unwrap_or(""))
+            .output()
+            .map_err(|e| format!("certutil failed: {}", e))?;
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    pub fn log_dir() -> PathBuf {
+        // Use same directory as the executable (target/debug in dev mode)
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                return dir.join("hebed-proxy");
+            }
+        }
+        dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("hebed-proxy")
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+mod windows_api {
+    use std::path::PathBuf;
+    pub fn set_proxy_registry(_: bool) -> Result<(), String> { Err("Windows-only".into()) }
+    pub fn install_ca_cert() -> Result<String, String> { Err("Windows-only".into()) }
+    pub fn log_dir() -> PathBuf { PathBuf::from("/tmp/hebed-proxy") }
+}
+
+// ─── Helpers ─────────────────────────────────────────────
+
+fn resolve_addon_path(app: &tauri::AppHandle) -> String {
+    // 1. Tauri bundled resource (production)
+    if let Ok(res) = app.path().resource_dir() {
+        let p = res.join("pii_redact.py");
+        if p.exists() {
+            return p.to_string_lossy().to_string();
+        }
+    }
+    // 2. Current directory (npm run tauri dev runs from project root)
+    if let Ok(cwd) = std::env::current_dir() {
+        let p = cwd.join("pii_redact.py");
+        if p.exists() {
+            return p.to_string_lossy().to_string();
+        }
+    }
+    // 3. Same directory as the executable (dev mode fallback)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join("pii_redact.py");
+            if p.exists() {
+                return p.to_string_lossy().to_string();
+            }
+        }
+    }
+    // 4. Common locations
+    for p in [r"C:\proxy-app\pii_redact.py", r"pii_redact.py"] {
+        if std::path::Path::new(p).exists() {
+            return p.to_string();
+        }
+    }
+    // 5. Fallback — return current_dir path so error message is clear
+    std::env::current_dir()
+        .unwrap_or_default()
+        .join("pii_redact.py")
+        .to_string_lossy()
+        .to_string()
+}
+
+fn ensure_log_dir() -> std::io::Result<PathBuf> {
+    let dir = windows_api::log_dir();
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+// ─── Tauri Commands ──────────────────────────────────────
+
+#[tauri::command]
+fn toggle_proxy(
+    app: tauri::AppHandle,
+    state: State<ProxyState>,
+    on: bool,
+) -> Result<String, String> {
+    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
+
+    if on {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+        }
+
+        let addon = resolve_addon_path(&app);
+        *state.addon_path.lock().unwrap() = addon.clone();
+
+        // Log file for mitmdump output
+        let log_dir = ensure_log_dir().map_err(|e| e.to_string())?;
+        let log_file = log_dir.join("proxy.log");
+        let err_file = log_dir.join("proxy.err");
+
+        let out = fs::File::create(&log_file).map_err(|e| e.to_string())?;
+        let err = fs::File::create(&err_file).map_err(|e| e.to_string())?;
+
+        let child = Command::new("mitmdump")
+            .args(["--listen-port", "8080", "-s"])
+            .arg(&addon)
+            .stdout(std::process::Stdio::from(out))
+            .stderr(std::process::Stdio::from(err))
+            .spawn()
+            .map_err(|e| format!(
+                "mitmdump not found. Install it: winget install mitmproxy\nError: {}",
+                e
+            ))?;
+
+        *guard = Some(child);
+
+        // Wait briefly and check it didn't crash immediately
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let check = guard.as_mut().unwrap();
+        match check.try_wait() {
+            Ok(Some(_status)) => {
+                // Crashed — read error log
+                let err_text = fs::read_to_string(&err_file).unwrap_or_default();
+                *guard = None;
+                return Err(format!("mitmdump crashed.\nAddon: {}\n{}", addon, err_text));
+            }
+            Ok(None) => {} // Still running — good
+            Err(e) => return Err(format!("mitmdump status check failed: {}", e)),
+        }
+
+        windows_api::set_proxy_registry(true)?;
+
+        Ok(format!("Proxy ON\nLog: {}", log_file.display()))
+    } else {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill();
+        }
+        windows_api::set_proxy_registry(false)?;
+        Ok("Proxy OFF".into())
+    }
 }
 
 #[tauri::command]
-fn toggle_proxy(state: State<ProxyState>) -> Result<String, String> {
-    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
-
-    if guard.is_some() {
-        let mut child = guard.take().unwrap();
-        child.kill().map_err(|e| format!("Failed to kill: {}", e))?;
-        child.wait().ok();
-        set_system_proxy(false)?;
-        Ok("Proxy OFF".to_string())
-    } else {
-        let addon = &state.addon_path;
-        let log_dir = log_dir();
-        std::fs::create_dir_all(&log_dir).ok();
-
-        let child = Command::new("mitmdump")
-            .args([
-                "-s", addon,
-                "-p", "8080",
-                "--set", &format!("log_dir={}", log_dir.display()),
-            ])
-            .spawn()
-            .map_err(|e| format!("Failed to start mitmdump: {}", e))?;
-
-        std::thread::sleep(std::time::Duration::from_millis(1500));
-        let crashed = check_process_alive(child.id());
-
-        if crashed {
-            set_system_proxy(false)?;
-            let log_path = log_dir.join("proxy.log");
-            let stderr = std::fs::read_to_string(&log_path).unwrap_or_default();
-            return Err(format!(
-                "mitmdump crashed after start.\nCheck: {}",
-                stderr.lines().last().unwrap_or("no output")
-            ));
+fn get_proxy_status(state: State<ProxyState>) -> Result<serde_json::Value, String> {
+    let guard = state.child.lock().map_err(|e| e.to_string())?;
+    let running = match guard.as_ref() {
+        Some(child) => {
+            // Check if the process is still alive via OpenProcess
+            let pid = child.id();
+            check_process_alive(pid)
         }
+        None => false,
+    };
 
-        *guard = Some(child);
-        set_system_proxy(true)?;
-        Ok(format!(
-            "Proxy ON — logs at {}",
-            log_dir.join("proxy.log").display()
-        ))
+    Ok(serde_json::json!({
+        "running": running,
+        "port_listening": port_8080_listening(),
+        "addon": state.addon_path.lock().unwrap().clone(),
+    }))
+}
+
+#[tauri::command]
+fn get_logs() -> Result<String, String> {
+    let log_dir = ensure_log_dir().map_err(|e| e.to_string())?;
+
+    // 1. PII events log (structured, from addon's _log())
+    let pii_file = log_dir.join("pii_events.log");
+    if pii_file.exists() {
+        let pii = fs::read_to_string(&pii_file).unwrap_or_default();
+        if !pii.trim().is_empty() {
+            return Ok(format!("=== PII Events ===\n{}", pii));
+        }
     }
+
+    // 2. Fallback: mitmdump stdout
+    let log_file = log_dir.join("proxy.log");
+    if log_file.exists() {
+        let mut output = String::from("=== mitmdump stdout ===\n");
+        let f = fs::File::open(&log_file).map_err(|e| e.to_string())?;
+        for line in BufReader::new(f).lines().flatten() {
+            if line.contains("[PII]") || line.contains("error") || line.contains("Error") || line.contains("listening") {
+                output.push_str(&line);
+                output.push('\n');
+            }
+        }
+        if output != "=== mitmdump stdout ===\n" {
+            // 3. Also check stderr
+            let err_file = log_dir.join("proxy.err");
+            if err_file.exists() {
+                let err = fs::read_to_string(&err_file).unwrap_or_default();
+                if !err.trim().is_empty() {
+                    output.push_str("\n=== mitmdump stderr ===\n");
+                    output.push_str(&err);
+                }
+            }
+            return Ok(output);
+        }
+    }
+
+    Ok("No PII events yet. Open ChatGPT and send a message containing an email or phone number.".into())
 }
 
 #[tauri::command]
 fn install_cert() -> Result<String, String> {
-    let cmd = Command::new("certutil")
-        .args([
-            "-user",
-            "-addstore",
-            "Root",
-            cert_path().to_str().unwrap_or("mitmproxy-ca-cert.cer"),
-        ])
-        .output()
-        .map_err(|e| format!("certutil failed: {}", e))?;
-
-    if cmd.status.success() {
-        Ok("Certificate installed".to_string())
-    } else {
-        let stderr = String::from_utf8_lossy(&cmd.stderr);
-        Err(format!("certutil error: {}", stderr))
-    }
+    windows_api::install_ca_cert()
 }
 
-#[tauri::command]
-fn get_status(state: State<ProxyState>) -> Result<String, String> {
-    let guard = state.child.lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
-        let listening = is_port_listening(8080);
-        let log_path = log_dir().join("proxy.log");
-        if listening {
-            Ok(format!("Proxy ON — {}", log_path.display()))
-        } else {
-            Ok("Proxy ON (process alive but port not responding)".to_string())
-        }
-    } else {
-        Ok("Proxy OFF".to_string())
-    }
+fn port_8080_listening() -> bool {
+    std::net::TcpStream::connect("127.0.0.1:8080").is_ok()
 }
 
-#[tauri::command]
-fn show_logs() -> Result<String, String> {
-    let path = log_dir().join("pii_events.log");
-    let content = std::fs::read_to_string(&path).unwrap_or_default();
-    if content.is_empty() {
-        return Ok("No PII events yet. Browse ChatGPT/Claude and try again.".to_string());
-    }
-    Ok(content)
-}
-
-
-// ── helpers ──
-
-fn cert_path() -> PathBuf {
-    dirs().join("mitmproxy").join("mitmproxy-ca-cert.cer")
-}
-
-fn dirs() -> PathBuf {
-    let base = std::env::var("USERPROFILE")
-        .map(PathBuf::from)
-.unwrap_or_else(|_| PathBuf::from("."));
-    base.join(".mitmproxy")
-}
-
-fn log_dir() -> PathBuf {
-    let local = std::env::var("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-    local.join("hebed-proxy")
-}
-
-fn set_system_proxy(enable: bool) -> Result<(), String> {
-    // Registry
-    let hkcu = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER);
-    let (key, _) = hkcu
-        .create_subkey(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
-        .map_err(|e| e.to_string())?;
-
-    if enable {
-        key.set_value("ProxyEnable", &1u32).map_err(|e| e.to_string())?;
-        key.set_value("ProxyServer", &"127.0.0.1:8080")
-            .map_err(|e| e.to_string())?;
-    } else {
-        key.set_value("ProxyEnable", &0u32).map_err(|e| e.to_string())?;
-        key.delete_value("ProxyServer").ok();
-    }
-
-    // Broadcast via InternetSetOptionW
-    unsafe {
-        let lib = libloading::Library::new("wininet.dll").map_err(|e| e.to_string())?;
-
-        type InternetSetOptionFn = unsafe extern "system" fn(
-            *const u16,
-            WinDword,
-            *const u16,
-            WinDword,
-        ) -> WinBool;
-
-        let func: libloading::Symbol<InternetSetOptionFn> =
-            lib.get(b"InternetSetOptionW").map_err(|e| e.to_string())?;
-
-        let null_wide: *const u16 = std::ptr::null();
-        func(null_wide, 39, null_wide, 0); // INTERNET_OPTION_SETTINGS_CHANGED
-        func(null_wide, 37, null_wide, 0); // INTERNET_OPTION_REFRESH
-    }
-
-    // Broadcast WM_SETTINGCHANGE
-    unsafe {
-        let lib = libloading::Library::new("user32.dll").map_err(|e| e.to_string())?;
-
-        type SendMessageTimeoutFn = unsafe extern "system" fn(
-            WinHandle,
-            WinDword,
-            WinWparam,
-            *const u16,
-        ) -> WinResult;
-
-        let func: libloading::Symbol<SendMessageTimeoutFn> =
-            lib.get(b"SendMessageTimeoutW").map_err(|e| e.to_string())?;
-
-        let env: Vec<u16> = "Environment\0".encode_utf16().collect();
-        func(0xFFFF, 0x001A, 0, env.as_ptr());
-    }
-
-    Ok(())
-}
-
+#[cfg(target_os = "windows")]
 fn check_process_alive(pid: u32) -> bool {
-    // Returns true if the process has already died
     unsafe {
-        let lib = match libloading::Library::new("kernel32.dll") {
+        let kernel32 = match libloading::Library::new("kernel32.dll") {
             Ok(l) => l,
-            Err(_) => return true,
+            Err(_) => return false,
         };
-
-        type OpenProcessFn =
-            unsafe extern "system" fn(WinDword, WinBool, WinDword) -> WinHandle;
-
-        let open: libloading::Symbol<OpenProcessFn> =
-            match lib.get(b"OpenProcess") {
+        let open: libloading::Symbol<unsafe extern "system" fn(u32, i32, u32) -> isize> =
+            match kernel32.get(b"OpenProcess") {
                 Ok(f) => f,
                 Err(_) => return false,
             };
-
         let h = open(0x100000, 0, pid); // SYNCHRONIZE
         if h == 0 {
-            return true;
+            return false; // can't open = dead
         }
-
-        type WaitForSingleObjectFn =
-            unsafe extern "system" fn(WinHandle, WinDword) -> WinDword;
-
-        let wait: libloading::Symbol<WaitForSingleObjectFn> =
-            match lib.get(b"WaitForSingleObject") {
+        let wait: libloading::Symbol<unsafe extern "system" fn(isize, u32) -> u32> =
+            match kernel32.get(b"WaitForSingleObject") {
                 Ok(f) => f,
                 Err(_) => return false,
             };
-
         let result = wait(h, 0);
-
-        type CloseHandleFn = unsafe extern "system" fn(WinHandle) -> WinBool;
-        let close: libloading::Symbol<CloseHandleFn> =
-            lib.get(b"CloseHandle").unwrap();
+        let close: libloading::Symbol<unsafe extern "system" fn(isize) -> i32> =
+            kernel32.get(b"CloseHandle").unwrap();
         close(h);
-
-        result == 0 // WAIT_OBJECT_0 = dead
+        result != 0 // WAIT_OBJECT_0 = 0 = dead. Non-zero = alive.
     }
 }
 
-fn is_port_listening(port: u16) -> bool {
-    std::net::TcpStream::connect_timeout(
-        &format!("127.0.0.1:{}", port).parse().unwrap(),
-        std::time::Duration::from_millis(500),
-    )
-    .is_ok()
+#[cfg(not(target_os = "windows"))]
+fn check_process_alive(_pid: u32) -> bool {
+    // On non-Windows, just check if we can signal the process
+    // This is a best-effort fallback
+    true
 }
 
-// ── main ──
+// ─── Entry Point ─────────────────────────────────────────
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let addon_path = std::env::current_dir()
-        .unwrap_or_default()
-        .join("pii_redact.py");
-
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .manage(ProxyState {
             child: Mutex::new(None),
-            addon_path: addon_path.to_string_lossy().to_string(),
+            addon_path: Mutex::new(String::new()),
         })
         .invoke_handler(tauri::generate_handler![
             toggle_proxy,
+            get_proxy_status,
+            get_logs,
             install_cert,
-            get_status,
-            show_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
-
-
