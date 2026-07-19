@@ -1,0 +1,26 @@
+[package]
+name = "proxy_mvp"
+version = "0.1.0"
+description = "Hebed Privacy Proxy — one-click PII redaction for ChatGPT & Claude"
+authors = ["Edward"]
+edition = "2021"
+
+[lib]
+name = "proxy_mvp_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+dirs = "5"
+
+# Windows-only dependencies
+[target.'cfg(target_os = "windows")'.dependencies]
+winreg = "0.52"
+libloading = "0.8"
