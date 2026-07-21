@@ -58,13 +58,11 @@ function App() {
         <div className="dot" data-active={isOn} />
         <span>{isOn ? "Protected" : "Off"}</span>
       </div>
-
+      
       <div className="hero">
-        <p className="label">HEBED PRIVACY PROXY</p>
         <h1 className="title">
-          One tap to anonymize<span className="dim"> ChatGPT &amp; Claude</span>
-        </h1>
-      </div>
+        <span className="dim"> Tap to HEBED </span></h1>
+      </div> 
 
       <button
         className={`shazam ${isOn ? "active" : ""} ${loading ? "loading" : ""}`}
@@ -75,12 +73,6 @@ function App() {
           <span className="icon">{isOn ? "■" : "●"}</span>
         </div>
       </button>
-
-      <p className="hint">
-        {isOn
-          ? "Proxy active — browse ChatGPT and Claude normally."
-          : "Tap to enable — one click, no settings."}
-      </p>
 
       <div className="actions">
         {!isOn && !certInstalled && (
@@ -104,14 +96,6 @@ function App() {
           {statusMsg}
         </div>
       )}
-
-      <div className="providers">
-        <span>ChatGPT</span>
-        <span className="divider">·</span>
-        <span>Claude</span>
-        <span className="divider">·</span>
-        <span>OpenAI API</span>
-      </div>
     </div>
   );
 }

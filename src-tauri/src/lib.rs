@@ -119,7 +119,7 @@ fn resolve_addon_path(app: &tauri::AppHandle) -> String {
         }
     }
     // 4. Common locations
-    for p in [r"C:\proxy-app\pii_redact.py", r"pii_redact.py"] {
+    for p in [r"C:\proxy_mvp\pii_redact.py", r"pii_redact.py"] {
         if std::path::Path::new(p).exists() {
             return p.to_string();
         }
@@ -136,6 +136,46 @@ fn ensure_log_dir() -> std::io::Result<PathBuf> {
     let dir = windows_api::log_dir();
     fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+fn find_mitmdump() -> Option<String> {
+    // 1. Check PATH
+    if let Ok(output) = Command::new("where").arg("mitmdump").output() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let p = line.trim();
+            if !p.is_empty() && std::path::Path::new(p).exists() {
+                return Some(p.to_string());
+            }
+        }
+    }
+    // 2. WindowsApps (winget / Microsoft Store install) — two possible locations
+    for app_dir in &[
+        std::env::var("LOCALAPPDATA").ok().map(|l| std::path::PathBuf::from(l).join("Microsoft").join("WindowsApps")),
+        Some(std::path::PathBuf::from(r"C:\Program Files\WindowsApps")),
+    ] {
+        if let Some(ref base) = app_dir {
+            if let Ok(entries) = std::fs::read_dir(base) {
+                for entry in entries.flatten() {
+                    let p = entry.path().join("mitmdump.exe");
+                    if p.exists() {
+                        return Some(p.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+    // 3. Program Files
+    for pf in &[std::env::var("ProgramFiles"), std::env::var("ProgramFiles(x86)")] {
+        if let Ok(pf) = pf {
+            let p = std::path::Path::new(pf)
+                .join("mitmproxy").join("bin").join("mitmdump.exe");
+            if p.exists() {
+                return Some(p.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
 }
 
 // ─── Tauri Commands ──────────────────────────────────────
@@ -164,7 +204,7 @@ fn toggle_proxy(
         let out = fs::File::create(&log_file).map_err(|e| e.to_string())?;
         let err = fs::File::create(&err_file).map_err(|e| e.to_string())?;
 
-        let child = Command::new("mitmdump")
+        let child = Command::new(&find_mitmdump().unwrap_or_else(|| "mitmdump".to_string()))
             .args(["--listen-port", "8080", "-s"])
             .arg(&addon)
             .stdout(std::process::Stdio::from(out))
