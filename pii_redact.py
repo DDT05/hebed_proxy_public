@@ -1,4 +1,4 @@
-import json, re, os
+import json, re
 from mitmproxy import http
 
 PII_PATTERNS = [
@@ -9,12 +9,6 @@ PII_PATTERNS = [
 ]
 
 _pii_store: dict[str, dict[str, str]] = {}
-_log_path = os.path.join(os.environ.get('LOCALAPPDATA', '.'), 'hebed-proxy', 'pii_events.log')
-
-def _log(msg: str):
-    os.makedirs(os.path.dirname(_log_path), exist_ok=True)
-    with open(_log_path, 'a') as f:
-        f.write(msg + '\n')
 
 def _redact_text(text: str, store: dict) -> str:
     for pattern, label in PII_PATTERNS:
@@ -53,9 +47,9 @@ def request(flow: http.HTTPFlow):
         if modified:
             flow.request.content = json.dumps(body).encode()
             _pii_store[flow.id] = store
-            _log(f"[PII] ChatGPT: redacted {len(store)} items in {flow.id}")
+            print(f"[PII] ChatGPT: redacted {len(store)} items in {flow.id}")
 
-    # --- Claude ---
+    # --- Claude (dynamic org & conversation UUIDs) ---
     elif re.search(r'claude\.ai/api/organizations/[^/]+/chat_conversations/[^/]+/completion', url):
         try:
             body = json.loads(flow.request.content)
@@ -71,7 +65,7 @@ def request(flow: http.HTTPFlow):
         if modified:
             flow.request.content = json.dumps(body).encode()
             _pii_store[flow.id] = store
-            _log(f"[PII] Claude: redacted {len(store)} items in {flow.id}")
+            print(f"[PII] Claude: redacted {len(store)} items in {flow.id}")
 
     # --- Standard API ---
     elif "/v1/chat/completions" in url:
@@ -91,13 +85,13 @@ def request(flow: http.HTTPFlow):
         if modified:
             flow.request.content = json.dumps(body).encode()
             _pii_store[flow.id] = store
-            _log(f"[PII] API: redacted {len(store)} items in {flow.id}")
+            print(f"[PII] API: redacted {len(store)} items in {flow.id}")
 
 def response(flow: http.HTTPFlow):
     store = _pii_store.pop(flow.id, None)
     if not store:
         return
-text = flow.response.get_text()
+    text = flow.response.get_text()
     for placeholder, original in store.items():
         text = text.replace(placeholder, original)
     flow.response.set_text(text)

@@ -43,7 +43,7 @@ function App() {
 
   const handleShowLogs = async () => {
     try {
-      const result = await invoke<string>("show_logs");
+      const result = await invoke<string>("get_logs");
       setLogs(result);
       setShowLogs(!showLogs);
     } catch (err) {
