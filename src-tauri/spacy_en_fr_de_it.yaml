@@ -1,0 +1,59 @@
+# Presidio NlpEngine configuration for multi-language NER
+# sm models: ~15 MB each, loads in <1s.  md (~40 MB, 2-3s) available if needed.
+# Install: python -m spacy download en_core_web_sm fr_core_news_sm de_core_news_sm it_core_news_sm
+
+nlp_engine_name: spacy
+models:
+  - lang_code: en
+    model_name: en_core_web_sm
+  - lang_code: fr
+    model_name: fr_core_news_sm
+  - lang_code: de
+    model_name: de_core_news_sm
+  - lang_code: it
+    model_name: it_core_news_sm
+
+ner_model_configuration:
+  labels_to_ignore:
+    - CARDINAL
+    - DATE
+    - EVENT
+    - FAC
+    - GPE
+    - LANGUAGE
+    - LAW
+    - LOC
+    - MONEY
+    - NORP
+    - ORDINAL
+    - ORG
+    - PERCENT
+    - PRODUCT
+    - QUANTITY
+    - TIME
+    - WORK_OF_ART
+  model_to_presidio_entity_mapping:
+    PER: PERSON
+    PERSON: PERSON
+    LOC: LOCATION
+    GPE: LOCATION
+    ORG: ORGANIZATION
+    NORP: NRP
+    DATE: DATE_TIME
+    TIME: DATE_TIME
+    MONEY: MONEY
+    FAC: LOCATION
+    PRODUCT: PRODUCT
+    EVENT: EVENT
+    WORK_OF_ART: WORK_OF_ART
+    LAW: LAW
+    LANGUAGE: LANGUAGE
+
+  low_confidence_score_multiplier: 0.4
+  low_score_entity_names:
+    - ORGANIZATION
+    - PRODUCT
+    - EVENT
+    - WORK_OF_ART
+    - LAW
+    - LANGUAGE

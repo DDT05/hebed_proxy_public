@@ -11,9 +11,19 @@ function App() {
   const [showLogs, setShowLogs] = useState(false);
 
   useEffect(() => {
-    invoke<{ running: boolean }>("get_proxy_status")
-      .then((s) => setIsOn(s.running))
-      .catch(() => {});
+    const check = () => {
+      invoke<{ running: boolean; died: boolean }>("get_proxy_status")
+        .then((s) => {
+          setIsOn(s.running);
+          if (s.died) {
+            setStatusMsg("⚠ Proxy crashed — system proxy auto-disabled. Toggle ON to restart.");
+          }
+        })
+        .catch(() => {});
+    };
+    check(); // initial
+    const interval = setInterval(check, 3000); // watchdog poll
+    return () => clearInterval(interval);
   }, []);
 
   const handleToggle = async () => {

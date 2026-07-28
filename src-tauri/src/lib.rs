@@ -58,7 +58,7 @@ mod windows_api {
     pub fn install_ca_cert() -> Result<String, String> {
         let cert_path = dirs::home_dir()
             .ok_or("Cannot find home directory")?
-            .join(".mitmproxy")
+            .join(".mitmproxy") //.mitmdump?
             .join("mitmproxy-ca-cert.cer");
         if !cert_path.exists() {
             return Err(format!("CA cert not found at {}. Start proxy once to generate it.", cert_path.display()));
@@ -139,29 +139,21 @@ fn ensure_log_dir() -> std::io::Result<PathBuf> {
 }
 
 fn find_mitmdump() -> Option<String> {
-    // 1. Check PATH
+    // 1. Pip-installed mitmdump (shares Python env with Presidio)
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let pip = std::path::PathBuf::from(appdata)
+            .join("Python").join("Python313").join("Scripts").join("mitmdump.exe");
+        if pip.exists() {
+            return Some(pip.to_string_lossy().to_string());
+        }
+    }
+    // 2. Check PATH
     if let Ok(output) = Command::new("where").arg("mitmdump").output() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             let p = line.trim();
             if !p.is_empty() && std::path::Path::new(p).exists() {
                 return Some(p.to_string());
-            }
-        }
-    }
-    // 2. WindowsApps (winget / Microsoft Store install) — two possible locations
-    for app_dir in &[
-        std::env::var("LOCALAPPDATA").ok().map(|l| std::path::PathBuf::from(l).join("Microsoft").join("WindowsApps")),
-        Some(std::path::PathBuf::from(r"C:\Program Files\WindowsApps")),
-    ] {
-        if let Some(ref base) = app_dir {
-            if let Ok(entries) = std::fs::read_dir(base) {
-                for entry in entries.flatten() {
-                    let p = entry.path().join("mitmdump.exe");
-                    if p.exists() {
-                        return Some(p.to_string_lossy().to_string());
-                    }
-                }
             }
         }
     }
@@ -245,7 +237,7 @@ fn toggle_proxy(
 
 #[tauri::command]
 fn get_proxy_status(state: State<ProxyState>) -> Result<serde_json::Value, String> {
-    let guard = state.child.lock().map_err(|e| e.to_string())?;
+    let mut guard = state.child.lock().map_err(|e| e.to_string())?;
     let running = match guard.as_ref() {
         Some(child) => {
             // Check if the process is still alive via OpenProcess
@@ -255,9 +247,19 @@ fn get_proxy_status(state: State<ProxyState>) -> Result<serde_json::Value, Strin
         None => false,
     };
 
+    // Watchdog: mitmdump died but registry proxy still ON → auto-disable
+    // so the user regains internet instead of ERR_PROXY_CONNECTION_FAILED.
+    let mut died = false;
+    if !running && guard.is_some() {
+        *guard = None;
+        let _ = windows_api::set_proxy_registry(false);
+        died = true;
+    }
+
     Ok(serde_json::json!({
         "running": running,
         "port_listening": port_8080_listening(),
+        "died": died,
         "addon": state.addon_path.lock().unwrap().clone(),
     }))
 }
@@ -309,7 +311,7 @@ fn install_cert() -> Result<String, String> {
 }
 
 fn port_8080_listening() -> bool {
-    std::net::TcpStream::connect("127.0.0.1:8080").is_ok()
+    std::net::TcpStream::connect("http://localhost:8080").is_ok()
 }
 
 #[cfg(target_os = "windows")]
@@ -354,6 +356,19 @@ fn check_process_alive(_pid: u32) -> bool {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|_app| {
+            // Clean slate: disable any leftover proxy from previous crash
+            #[cfg(target_os = "windows")]
+            windows_api::set_proxy_registry(false).ok();
+            Ok(())
+        })
+        .on_window_event(|_window, event| {
+            if let tauri::WindowEvent::Destroyed = event {
+                // App closing — kill mitmdump, disable proxy
+                #[cfg(target_os = "windows")]
+                windows_api::set_proxy_registry(false).ok();
+            }
+        })
         .manage(ProxyState {
             child: Mutex::new(None),
             addon_path: Mutex::new(String::new()),
