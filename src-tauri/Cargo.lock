@@ -2606,6 +2606,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
+ "url",
  "winreg 0.52.0",
 ]
 

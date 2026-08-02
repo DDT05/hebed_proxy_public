@@ -12,11 +12,26 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  // Pre-bundle heavy deps at startup so the WebView's first page load doesn't
+  // wait for Vite to transform the whole module graph (react + supabase-js
+  // unminified ESM = ~30s in dev). With these pre-optimized, first render is ~1-2s.
+  optimizeDeps: {
+    include: [
+      "react",
+      "react-dom",
+      "react-dom/client",
+      "@supabase/supabase-js",
+      "@tauri-apps/api/core",
+      "@tauri-apps/api/event",
+    ],
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
     strictPort: true,
-    host: host || false,
+    // Bind IPv4 explicitly: Vite's default `localhost` can resolve to ::1 (IPv6)
+    // only, which WebView2's initial navigation silently fails on -> blank window.
+    host: host || "127.0.0.1",
     hmr: host
       ? {
           protocol: "ws",

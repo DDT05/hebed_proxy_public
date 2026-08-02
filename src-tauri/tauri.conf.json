@@ -1,18 +1,18 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Hebed Privacy Proxy",
+  "productName": "Hebed Proxy",
   "version": "0.1.0",
   "identifier": "com.hebed.proxy",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "Hebed Privacy Proxy",
+        "title": "Hebed Proxy",
         "width": 420,
         "height": 680,
         "resizable": false,
