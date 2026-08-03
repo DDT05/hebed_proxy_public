@@ -35,6 +35,16 @@
     ],
     "resources": [
       "pii_redact.py"
-    ]
+    ],
+    "publisher": "Hebed",
+    "copyright": "Copyright (c) 2026 Hebed",
+    "windows": {
+      "nsis": {
+        "compression": "zlib",
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "installMode": "perMachine"
+      }
+    }
   }
 }
