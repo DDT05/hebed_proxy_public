@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   startPkceAuth,
@@ -8,11 +8,18 @@ import {
   pushProxyLogsToSupabase,
 } from "./lib/supabase";
 import "./App.css";
+import hebedLogo from "/src-tauri/icons/64x64.png";
 
 interface ProxyStatus {
   running: boolean;
   died: boolean;
   addon: string;
+}
+
+interface Notification {
+  id: number;
+  msg: string;
+  type: "success" | "error" | "info";
 }
 
 function AuthScreen({
@@ -28,11 +35,9 @@ function AuthScreen({
     <div className="auth-screen">
       <div className="auth-card">
         <div className="auth-card-header">
-          <div className="auth-icon">&#8645;</div>
-          <h1>HEBED</h1>
+          <img src={hebedLogo} alt="HEBED" className="auth-logo" />
           <p className="auth-sub"></p>
         </div>
-
         <div className="auth-card-body">
           <button className="auth-btn google" onClick={onSignIn} disabled={loading}>
             {loading ? "Opening browser…" : "Sign in"}
@@ -57,10 +62,25 @@ function App() {
   const [authInProgress, setAuthInProgress] = useState(false);
   const [isOn, setIsOn] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [statusMsg, setStatusMsg] = useState("");
   const [logs, setLogs] = useState("");
   const [showLogs, setShowLogs] = useState(false);
   const [certInstalled, setCertInstalled] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const notifId = useRef(0);
+
+  // ── Notifications: boxed toasts, auto-dismiss after 3s ──────
+  const dismissNotif = useCallback((id: number) => {
+    setNotifications((n) => n.filter((x) => x.id !== id));
+  }, []);
+  const notify = useCallback(
+    (msg: string, type: Notification["type"] = "info") => {
+      const id = ++notifId.current;
+      setNotifications((n) => [...n.slice(-3), { id, msg, type }]); // keep max 4
+      setTimeout(() => dismissNotif(id), 3000);
+    },
+    [dismissNotif]
+  );
 
   useEffect(() => {
     console.log("[App] checking existing session...");
@@ -83,20 +103,20 @@ function App() {
       try {
         const s = await invoke<ProxyStatus>("get_proxy_status");
         setIsOn(s.running);
-        if (s.died) setStatusMsg("Proxy crashed — toggle ON to restart.");
+        if (s.died) notify("Proxy crashed — toggle ON to restart.", "error");
       } catch { /* */ }
     };
     check();
     const interval = setInterval(check, 3000);
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
   // Auto-sync captured events (files.log / prompts.log) → Supabase proxy_logs.
   // Runs once on sign-in, then every 60s while logged in, so the workflow
   // "capture → POST proxy_logs" completes end-to-end without manual action.
-  const [syncMsg, setSyncMsg] = useState("");
   const [syncing, setSyncing] = useState(false);
-  const runSync = async () => {
+  const runSync = useCallback(async () => {
     if (!session || syncing) return;
     setSyncing(true);
     try {
@@ -104,14 +124,16 @@ function App() {
       const files = res.files.ok ? `files:${res.files.pushed}` : `files:ERR ${res.files.error}`;
       const prompts = res.prompts.ok ? `prompts:${res.prompts.pushed}` : `prompts:ERR ${res.prompts.error}`;
       console.log(`[App] sync done — ${files} | ${prompts}`);
-      setSyncMsg(`Synced ${files} | ${prompts}`);
+      notify(`Synced ${files} | ${prompts}`, res.files.ok && res.prompts.ok ? "success" : "error");
     } catch (e) {
       console.error("[App] sync error:", e);
-      setSyncMsg("Sync error: " + String(e));
+      notify("Sync error: " + String(e), "error");
     } finally {
       setSyncing(false);
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, syncing, notify]);
+
   useEffect(() => {
     if (!session) return;
     runSync();
@@ -129,14 +151,14 @@ function App() {
       if (s) {
         setSession(s); // direct state update — guarantees toggle screen appears
         console.log("[App] setSession called directly with:", s.user.email);
-        setStatusMsg("Signed in as " + s.user.email);
+        notify("Signed in as " + s.user.email, "success");
       } else {
         console.log("[App] PKCE returned null — no session to set");
-        setStatusMsg("Sign in cancelled.");
+        notify("Sign in cancelled.", "info");
       }
     } catch (e) {
       console.error("[App] handleSignIn error:", e);
-      setStatusMsg("Auth error: " + String(e));
+      notify("Auth error: " + String(e), "error");
     } finally {
       setAuthInProgress(false);
     }
@@ -151,14 +173,14 @@ function App() {
       if (s) {
         setSession(s); // direct state update — guarantees toggle screen appears
         console.log("[App] setSession called directly with:", s.user.email);
-        setStatusMsg("Signed up as " + s.user.email);
+        notify("Signed up as " + s.user.email, "success");
       } else {
         console.log("[App] PKCE returned null — no session to set");
-        setStatusMsg("Sign up cancelled.");
+        notify("Sign up cancelled.", "info");
       }
     } catch (e) {
       console.error("[App] handleSignUp error:", e);
-      setStatusMsg("Auth error: " + String(e));
+      notify("Auth error: " + String(e), "error");
     } finally {
       setAuthInProgress(false);
     }
@@ -166,26 +188,25 @@ function App() {
 
   const handleToggle = async () => {
     setLoading(true);
-    setStatusMsg("");
     try {
       const result = await invoke<string>("toggle_proxy", { on: !isOn });
       setIsOn(!isOn);
-      setStatusMsg(result);
+      notify(result, !isOn ? "success" : "info");
     } catch (err) {
-      setStatusMsg(String(err));
+      notify(String(err), "error");
     } finally {
       setLoading(false);
     }
   };
 
   const handleInstallCert = async () => {
-    setStatusMsg("Installing certificate...");
+    notify("Installing certificate...", "info");
     try {
       const result = await invoke<string>("install_cert");
       setCertInstalled(true);
-      setStatusMsg(result);
+      notify(result, "success");
     } catch (err) {
-      setStatusMsg(String(err));
+      notify(String(err), "error");
     }
   };
 
@@ -200,6 +221,16 @@ function App() {
     }
   };
 
+  const handleSignOut = async () => {
+    setSidebarOpen(false);
+    try {
+      await signOut();
+      notify("Signed out.", "info");
+    } catch (e) {
+      notify("Sign out error: " + String(e), "error");
+    }
+  };
+
   console.log("[App] render: authLoading=", authLoading, "session=", !!session, "-> showing", authLoading ? "Loading" : session ? "MAIN (toggle)" : "AUTH (login)");
   if (authLoading) {
     return <div className="app"><p style={{ color: "#71717a" }}>Loading…</p></div>;
@@ -207,20 +238,22 @@ function App() {
 
   if (!session) {
     return (
-      <AuthScreen
-        onSignIn={handleSignIn}
-        onSignUp={handleSignUp}
-        loading={authInProgress}
-      />
+      <>
+        <AuthScreen
+          onSignIn={handleSignIn}
+          onSignUp={handleSignUp}
+          loading={authInProgress}
+        />
+        <NotificationStack notifications={notifications} onDismiss={dismissNotif} />
+      </>
     );
   }
 
   return (
     <div className="app">
       <div className="top-bar">
-        <span className="top-email">{session.user.email}</span>
-        <button className="auth-btn small" onClick={() => signOut()}>
-          Sign Out
+        <button className="hamburger" onClick={() => setSidebarOpen(true)} aria-label="Menu">
+          ≡
         </button>
       </div>
 
@@ -245,37 +278,69 @@ function App() {
         </div>
       </button>
 
-      <div className="actions">
-        {!isOn && !certInstalled && (
-          <button className="action-btn" onClick={handleInstallCert}>
-            Install Certificate (first time only)
-          </button>
-        )}
-        <button className="action-btn" onClick={handleShowLogs}>
-          {showLogs ? "Hide Logs" : "Show Logs"}
-        </button>
-        <button className="action-btn" onClick={runSync} disabled={syncing}>
-          {syncing ? "Syncing…" : "Sync logs"}
-        </button>
-      </div>
-
-      {syncMsg && (
-        <div className={`toast ${syncMsg.includes("ERR") ? "error" : "success"}`}>
-          {syncMsg}
-        </div>
-      )}
-
       {showLogs && (
         <div className="log-viewer">
           <pre>{logs || "No logs yet."}</pre>
         </div>
       )}
 
-      {statusMsg && (
-        <div className={`toast ${statusMsg.includes("Signed") || statusMsg.includes("ON") || statusMsg.includes("successfully") ? "success" : "error"}`}>
-          {statusMsg}
-        </div>
+      {/* Sidebar (≡ menu): user, sign out, secondary actions */}
+      {sidebarOpen && (
+        <>
+          <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />
+          <div className="sidebar">
+            <div className="sidebar-header">
+              <span className="sidebar-title">Settings</span>
+              <button className="sidebar-close" onClick={() => setSidebarOpen(false)} aria-label="Close">
+                ×
+              </button>
+            </div>
+            <div className="sidebar-user">
+              <div className="sidebar-email">{session.user.email}</div>
+            </div>
+            <div className="sidebar-actions">
+              {!certInstalled && (
+                <button className="action-btn" onClick={handleInstallCert}>
+                  Install Certificate
+                </button>
+              )}
+              <button className="action-btn" onClick={handleShowLogs}>
+                {showLogs ? "Hide Logs" : "Show Logs"}
+              </button>
+              <button className="action-btn" onClick={runSync} disabled={syncing}>
+                {syncing ? "Syncing…" : "Sync logs"}
+              </button>
+              <button className="action-btn danger" onClick={handleSignOut}>
+                Sign Out
+              </button>
+            </div>
+          </div>
+        </>
       )}
+
+      <NotificationStack notifications={notifications} onDismiss={dismissNotif} />
+    </div>
+  );
+}
+
+function NotificationStack({
+  notifications,
+  onDismiss,
+}: {
+  notifications: Notification[];
+  onDismiss: (id: number) => void;
+}) {
+  if (notifications.length === 0) return null;
+  return (
+    <div className="notification-stack">
+      {notifications.map((n) => (
+        <div key={n.id} className={`notification ${n.type}`}>
+          <span className="notification-msg">{n.msg}</span>
+          <button className="notification-close" onClick={() => onDismiss(n.id)} aria-label="Dismiss">
+            ×
+          </button>
+        </div>
+      ))}
     </div>
   );
 }
