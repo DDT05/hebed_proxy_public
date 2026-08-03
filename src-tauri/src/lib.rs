@@ -79,14 +79,13 @@ mod windows_api {
     }
 
     pub fn log_dir() -> PathBuf {
-        // Use same directory as the executable (target/debug in dev mode)
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                return dir.join("hebed-proxy");
-            }
-        }
-        dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
+        // User-writable location under %LOCALAPPDATA% — NOT next to the exe:
+        // perMachine installs place the exe under Program Files which is
+        // read-only for normal users, so toggle_proxy would fail with
+        // "Access is denied (os error 5)" when creating proxy.log etc.
+        dirs::data_local_dir()
+            .unwrap_or_else(|| dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")))
+            .join("com.hebed.proxy")
             .join("hebed-proxy")
     }
 }

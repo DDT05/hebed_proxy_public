@@ -43,7 +43,7 @@
         "compression": "zlib",
         "displayLanguageSelector": false,
         "installerIcon": "icons/icon.ico",
-        "installMode": "perMachine"
+        "installMode": "currentUser"
       }
     }
   }
