@@ -18,7 +18,17 @@ import sys
 
 # When frozen, bundled packages live in _MEIPASS; make sure imports resolve.
 if getattr(sys, "frozen", False):
-    sys.path.insert(0, sys._MEIPASS)
+    bundle_dir = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, bundle_dir)
+
+    # Point Python's SSL machinery at the bundled CA bundle (certifi). Without
+    # this, requests/urllib3 in the frozen engine fail every outbound HTTPS
+    # call with CERTIFICATE_VERIFY_FAILED "unable to get local issuer
+    # certificate" (e.g. spaCy model downloads, tldextract PSL fetches).
+    _cacert = os.path.join(bundle_dir, "certifi", "cacert.pem")
+    if os.path.exists(_cacert):
+        os.environ.setdefault("SSL_CERT_FILE", _cacert)
+        os.environ.setdefault("SSL_CERT_DIR", "")
 
 from mitmproxy.tools.main import mitmdump  # noqa: E402
 

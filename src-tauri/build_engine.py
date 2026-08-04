@@ -26,6 +26,11 @@ COLLECT = [
     "presidio_anonymizer",
     "spacy",
     "en_core_web_sm",
+    "fr_core_news_sm",
+    "de_core_news_sm",
+    "it_core_news_sm",
+    "tldextract",  # includes .tld_set_snapshot data (EmailRecognizer needs it)
+    "certifi",     # cacert.pem for outbound HTTPS (spaCy/tldextract fetches)
     "fitz",
     "pytesseract",
 ]
@@ -68,6 +73,20 @@ for c in COLLECT:
     cmd.append(f"--collect-all={c}")
 for h in HIDDEN:
     cmd.append(f"--hidden-import={h}")
+
+# Explicitly include tldextract's hidden .tld_set_snapshot data file.
+# --collect-all can skip dotfiles; EmailRecognizer crashes without it.
+_tld_dir = None
+try:
+    import tldextract as _tld
+    _tld_dir = os.path.dirname(os.path.abspath(_tld.__file__))
+except Exception:
+    pass
+if _tld_dir:
+    snap = os.path.join(_tld_dir, ".tld_set_snapshot")
+    if os.path.exists(snap):
+        cmd.append(f"--add-data={snap};tldextract")
+
 cmd.append(LAUNCHER)
 
 print("Running:", " ".join(cmd))
