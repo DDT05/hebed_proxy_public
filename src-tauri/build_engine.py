@@ -60,6 +60,9 @@ cmd = [
     "--workpath", WORK,
     "--specpath", WORK,
     "--console",
+    # Version metadata + icon reduce AV ML false positives (Wacatac.B!ml)
+    "--version-file", os.path.join(ROOT, "engine_version_file.txt"),
+    "--icon", os.path.join(ROOT, "icons", "icon.ico"),
 ]
 for c in COLLECT:
     cmd.append(f"--collect-all={c}")

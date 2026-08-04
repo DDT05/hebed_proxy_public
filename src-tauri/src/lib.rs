@@ -244,19 +244,58 @@ fn toggle_proxy(
 
         *guard = Some(child);
 
-        // Wait briefly and check it didn't crash immediately
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        let check = guard.as_mut().unwrap();
-        match check.try_wait() {
-            Ok(Some(_status)) => {
-                // Crashed — read error log
-                let err_text = fs::read_to_string(&err_file).unwrap_or_default();
-                *guard = None;
-                return Err(format!("mitmdump crashed.\nAddon: {}\n{}", addon, err_text));
+        // CRITICAL: wait until the engine is actually LISTENING on 8080 before
+        // enabling the system proxy. The bundled PyInstaller engine + spaCy NER
+        // boot takes 10-40s on first run (model load, cert generation). If we
+        // set the proxy registry while nothing listens, ALL browser traffic
+        // dies -> "proxy on but no internet". Poll up to 90s, checking the
+        // process is still alive, then verify with a real TCP connect.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        loop {
+            let status = {
+                let check = guard.as_mut().unwrap();
+                check.try_wait()
+            };
+            match status {
+                Ok(Some(_exit)) => {
+                    // Crashed — read error log for a useful message
+                    let err_text = fs::read_to_string(&err_file).unwrap_or_default();
+                    *guard = None;
+                    return Err(format!(
+                        "Proxy engine crashed during startup.\nAddon: {}\n{}",
+                        addon,
+                        err_text.trim()
+                    ));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    *guard = None;
+                    return Err(format!("Proxy engine status check failed: {}", e));
+                }
             }
-            Ok(None) => {} // Still running — good
-            Err(e) => return Err(format!("mitmdump status check failed: {}", e)),
+            if port_8080_listening() {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                // Give up: kill the engine, keep proxy OFF so the user keeps internet
+                if let Some(mut c) = guard.take() {
+                    let _ = c.kill();
+                }
+                let err_text = fs::read_to_string(&err_file).unwrap_or_default();
+                return Err(format!(
+                    "Proxy engine did not start listening on port 8080 within 90s.\n\
+                     Proxy left OFF so internet keeps working.\n{}",
+                    err_text.trim()
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
         }
+
+        // Engine is up. Auto-install the mitmproxy CA cert so HTTPS through the
+        // proxy works on a fresh machine without a manual "Install Certificate"
+        // click. mitmproxy generates the cert on first run; installing it into
+        // the user Root store is what makes interception actually usable.
+        let _ = install_cert();
 
         windows_api::set_proxy_registry(true)?;
 
@@ -546,7 +585,10 @@ fn install_cert() -> Result<String, String> {
 }
 
 fn port_8080_listening() -> bool {
-    std::net::TcpStream::connect("http://localhost:8080").is_ok()
+    // NOTE: pass host:port, NOT a URL — ToSocketAddrs for str can't parse
+    // "http://localhost:8080" (host becomes "http://localhost" -> DNS fail ->
+    // always false). Use "127.0.0.1:8080" to avoid any IPv6/DNS ambiguity.
+    std::net::TcpStream::connect(("127.0.0.1", 8080)).is_ok()
 }
 
 #[cfg(target_os = "windows")]
