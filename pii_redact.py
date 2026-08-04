@@ -1095,37 +1095,37 @@ def request(flow: http.HTTPFlow):
         print(f"[PII] ERROR in request: {e}", file=sys.stderr, flush=True)
 
 
-def response(flow: http.HTTPFlow):
-    """Restore original PII values in the API response."""
+#def response(flow: http.HTTPFlow):
+ #   """Restore original PII values in the API response."""
     # --- ChatGPT create-file API: map upload_url blob uuid -> filename ---
-    if flow.id in _pending_filenames:
-        filename = _pending_filenames.pop(flow.id)
-        try:
-            text = flow.response.get_text() or "{}"
-            resp = json.loads(text)
-            # The response contains the upload URL (and often the filename too)
-            upload_url = resp.get("upload_url") or resp.get("url") or ""
-            m = re.search(r"oaiusercontent\.com/files/([^/]+)/raw", upload_url)
-            blob_uuid = m.group(1) if m else ""
-            if blob_uuid:
-                _upload_meta[blob_uuid] = {
-                    "filename": filename,
-                    "content_type": resp.get("content_type") or resp.get("mime_type") or "",
-                }
-                print(f"[PII] files-api mapped {blob_uuid} -> {filename}",
-                      file=sys.stderr, flush=True)
-        except Exception as e:
-            print(f"[PII] files-api response error: {e}", file=sys.stderr, flush=True)
-        return
+  #  if flow.id in _pending_filenames:
+   #     filename = _pending_filenames.pop(flow.id)
+    #    try:
+     #       text = flow.response.get_text() or "{}"
+      #      resp = json.loads(text)
+       #     # The response contains the upload URL (and often the filename too)
+        #    upload_url = resp.get("upload_url") or resp.get("url") or ""
+         #   m = re.search(r"oaiusercontent\.com/files/([^/]+)/raw", upload_url)
+          #  blob_uuid = m.group(1) if m else ""
+           # if blob_uuid:
+            #    _upload_meta[blob_uuid] = {
+             #       "filename": filename,
+              #      "content_type": resp.get("content_type") or resp.get("mime_type") or "",
+               # }
+                #print(f"[PII] files-api mapped {blob_uuid} -> {filename}",
+                 #     file=sys.stderr, flush=True)
+       # except Exception as e:
+        #    print(f"[PII] files-api response error: {e}", file=sys.stderr, flush=True)
+        #return
 
-    try:
-        store = _pii_store.pop(flow.id, None)
-        if store:
-            text = flow.response.get_text()
-            if text:
-                for placeholder, original in store.items():
-                    text = text.replace(placeholder, original)
-                flow.response.set_text(text)
-                _log({"event": "restore", "placeholders": len(store)})
-    except Exception as e:
-        print(f"[PII] ERROR in response: {e}", file=sys.stderr, flush=True)
+    #try:
+     #   store = _pii_store.pop(flow.id, None)
+      #  if store:
+       #     text = flow.response.get_text()
+        #    if text:
+         #       for placeholder, original in store.items():
+          #          text = text.replace(placeholder, original)
+           #     flow.response.set_text(text)
+            #    _log({"event": "restore", "placeholders": len(store)})
+    #except Exception as e:
+     #   print(f"[PII] ERROR in response: {e}", file=sys.stderr, flush=True)
