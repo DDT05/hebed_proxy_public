@@ -97,10 +97,14 @@ proxy_mvp/
 │   ├── src/
 │   │   ├── main.rs             # Entry point (windows_subsystem = "windows" in release)
 │   │   └── lib.rs              # All Tauri commands, proxy lifecycle, log dir, auth server
+│   ├── build_engine.py         # PyInstaller build for the self-contained engine
+│   ├── engine_launcher.py      # Frozen entry point (forwards argv to mitmdump.main)
+│   ├── dist/hebed-proxy-engine/# PyInstaller output (bundled into installers)
 │   ├── icons/                  # Desktop/mobile app icons
 │   ├── Cargo.toml
 │   └── tauri.conf.json         # App config, bundle targets, NSIS/MSI settings
 ├── pii_redact.py               # mitmproxy addon (the actual PII engine)
+├── spacy_en_fr_de_it.yaml      # spaCy NER config for Presidio (en/fr/de/it)
 ├── package.json                # Frontend deps + scripts
 ├── vite.config.ts              # Vite config (port 1420, dep pre-bundling)
 └── tsconfig.json
@@ -155,12 +159,20 @@ The addon is pure Python and runs inside mitmdump. It shares the same Python env
 - Windows 10/11 (primary target; macOS/Linux build support exists but is not exercised)
 - [Rust toolchain](https://rustup.rs) (stable, edition 2021)
 - [Node.js](https://nodejs.org) 18+ and npm
-- Python 3.13 with:
-  - `pip install mitmproxy presidio-analyzer presidio-anonymizer`
-  - `pip install PyMuPDF python-docx Pillow` (file extraction)
-  - `python -m spacy download en_core_web_sm` (optional, enables NER beyond regex)
 - WebView2 runtime (preinstalled on Windows 11)
 - NSIS + WiX toolset (auto-downloaded by Tauri on first bundle build)
+
+End users do NOT need Python, mitmproxy, or Presidio installed: the installer
+ships a self-contained engine (`hebed-proxy-engine/`) built with PyInstaller
+that embeds mitmdump, Presidio, spaCy with the `en_core_web_sm` model, PyMuPDF,
+python-docx, Pillow, and pytesseract.
+
+Developer prerequisites for rebuilding the engine (see [Rebuilding the engine](#rebuilding-the-engine)):
+
+- Python 3.13 with:
+  - `pip install mitmproxy presidio-analyzer presidio-anonymizer`
+  - `pip install PyMuPDF python-docx Pillow pytesseract`
+  - `python -m spacy download en_core_web_sm` (enables NER beyond regex)
 
 ---
 
@@ -190,8 +202,35 @@ npm run tauri build
 Outputs:
 
 - `src-tauri/target/release/proxy_mvp.exe` (portable binary)
-- `src-tauri/target/release/bundle/nsis/Hebed Proxy_0.1.0_x64-setup.exe`
-- `src-tauri/target/release/bundle/msi/Hebed Proxy_0.1.0_x64_en-US.msi`
+- `src-tauri/target/release/bundle/nsis/Hebed Proxy_0.1.0_x64-setup.exe` (~125 MB, self-contained)
+- `src-tauri/target/release/bundle/msi/Hebed Proxy_0.1.0_x64_en-US.msi` (~125 MB, self-contained)
+
+### Rebuilding the engine
+
+The self-contained Python engine (`src-tauri/dist/hebed-proxy-engine/`) is a
+PyInstaller onedir build wrapping mitmdump plus the addon's full dependency
+chain. It is bundled as a Tauri resource so fresh machines need no Python.
+
+```bash
+cd src-tauri
+C:\Python313\python.exe build_engine.py
+```
+
+This runs PyInstaller with `--collect-all` for mitmproxy, Presidio, spaCy,
+`en_core_web_sm`, PyMuPDF, and pytesseract. Output lands in
+`src-tauri/dist/hebed-proxy-engine/` and is picked up by `npm run tauri build`
+via `bundle.resources`.
+
+Runtime lookup order in `find_mitmdump` (Rust):
+
+1. Bundled engine: `<resource_dir>/hebed-proxy-engine/hebed-proxy-engine.exe`
+   (also checked under `<resource_dir>/dist/` and next to the executable)
+2. Pip-installed mitmdump (`%APPDATA%\Python\Python313\Scripts\mitmdump.exe`)
+3. `mitmdump` on PATH
+4. `Program Files\mitmproxy\bin\mitmdump.exe`
+
+The engine launcher (`engine_launcher.py`) forwards argv to `mitmdump.main()`
+verbatim, so `--listen-port 8080 -s <addon>` works exactly as before.
 
 ---
 

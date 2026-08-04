@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# PyInstaller engine build artifacts
+src-tauri/build/
+src-tauri/dist/

@@ -144,7 +144,28 @@ fn ensure_log_dir() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
-fn find_mitmdump() -> Option<String> {
+fn find_mitmdump(app: &tauri::AppHandle) -> Option<String> {
+    // 0. Bundled self-contained engine (PyInstaller onedir: mitmdump + Presidio
+    //    + spaCy + file extractors). Preferred — works on machines without any
+    //    Python setup. Ships as bundle resource (either directly under the
+    //    resource dir, or under dist/ when the config path preserved the prefix).
+    let mut bases: Vec<PathBuf> = Vec::new();
+    if let Ok(res) = app.path().resource_dir() {
+        bases.push(res.clone());
+        bases.push(res.join("dist"));
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            bases.push(dir.to_path_buf());
+            bases.push(dir.join("dist"));
+        }
+    }
+    for base in bases {
+        let p = base.join("hebed-proxy-engine").join("hebed-proxy-engine.exe");
+        if p.exists() {
+            return Some(p.to_string_lossy().to_string());
+        }
+    }
     // 1. Pip-installed mitmdump (shares Python env with Presidio)
     if let Ok(appdata) = std::env::var("APPDATA") {
         let pip = std::path::PathBuf::from(appdata)
@@ -202,7 +223,7 @@ fn toggle_proxy(
         let out = fs::File::create(&log_file).map_err(|e| e.to_string())?;
         let err = fs::File::create(&err_file).map_err(|e| e.to_string())?;
 
-        let child = Command::new(&find_mitmdump().unwrap_or_else(|| "mitmdump".to_string()))
+        let child = Command::new(&find_mitmdump(&app).unwrap_or_else(|| "mitmdump".to_string()))
             .args(["--listen-port", "8080", "-s"])
             .arg(&addon)
             // Addon writes pii_events.log / files.log / prompts.log to PII_LOG_DIR.
