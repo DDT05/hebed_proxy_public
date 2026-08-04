@@ -38,7 +38,7 @@ Hebed Proxy runs a local interception proxy (mitmproxy on port 8080) and sets th
 1. Scans the request body for PII (emails, phone numbers, credit cards, names, URLs, bank numbers, ...).
 2. Replaces each hit with a placeholder token (for example `[EMAIL_ADDRESS_000]`).
 3. Forwards the redacted request to the LLM provider.
-4. Restores the original values when the provider echoes the placeholder back (best effort for text).
+<!--4. Restores the original values when the provider echoes the placeholder back (best effort for text). - ON HOLD-->
 5. Logs every redaction event (text and file scans) to local JSONL log files and optionally to Supabase.
 
 File uploads (PDF, DOCX, images, text) attached to ChatGPT and Claude are extracted, scanned, redacted, and rebuilt when `PII_REDACT_FILES=1`.
@@ -52,7 +52,7 @@ File uploads (PDF, DOCX, images, text) attached to ChatGPT and Claude are extrac
 |  Tauri Desktop   |        |  Python addon (mitmproxy) |
 |  app (Rust core) |        |  pii_redact.py            |
 |                  |        |                           |
-|  React UI        |  Tauri |  request() / response()   |
+|  React UI        |  Tauri |  request() / response() - ON HOLD   |
 |  (Vite frontend) | <----> |  intercepts LLM traffic   |
 |  App.tsx         | invoke |  Presidio + regex detect  |
 |  supabase.ts     |  IPC   |  writes JSONL event logs  |
@@ -239,9 +239,9 @@ raw text
 
 Recognizer behavior when spaCy models are missing: the engine falls back to a `NoOpNlpEngine` (regex-only). The self-test at startup (`_self_test`) prints detected entity counts so you can verify the engine is alive.
 
-### Placeholder restore
+<!--### Placeholder restore
 
-`response()` intercepts provider responses and replaces placeholder tokens with the original values (best effort for text completions). This makes the model's answer readable after redaction.
+ `response()` intercepts provider responses and replaces placeholder tokens with the original values (best effort for text completions). This makes the model's answer readable after redaction.-->
 
 ---
 
