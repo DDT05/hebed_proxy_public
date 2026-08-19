@@ -34,8 +34,6 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "pii_redact.py",
-      "spacy_en_fr_de_it.yaml",
       "dist/hebed-proxy-engine/"
     ],
     "publisher": "Hebed",

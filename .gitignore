@@ -26,3 +26,4 @@ dist-ssr
 # PyInstaller engine build artifacts
 src-tauri/build/
 src-tauri/dist/
+src-tauri/embedded_addon.py

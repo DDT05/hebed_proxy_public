@@ -223,6 +223,10 @@ fn toggle_proxy(
         let out = fs::File::create(&log_file).map_err(|e| e.to_string())?;
         let err = fs::File::create(&err_file).map_err(|e| e.to_string())?;
 
+        // The bundled engine (PyInstaller) embeds pii_redact.py as bytecode and
+        // extracts it at startup — the -s path passed here is a marker only;
+        // the launcher rewrites it to the extracted temp file. For a system
+        // mitmdump (dev), resolve_addon_path returns the real repo file.
         let child = Command::new(&find_mitmdump(&app).unwrap_or_else(|| "mitmdump".to_string()))
             .args(["--listen-port", "8080", "-s"])
             .arg(&addon)
