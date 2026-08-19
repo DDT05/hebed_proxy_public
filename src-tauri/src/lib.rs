@@ -45,6 +45,33 @@ mod windows_api {
         }
     }
 
+    /// Find a window by its title and bring it to the foreground. Used by the
+    /// single-instance guard so a second launch focuses the running app
+    /// instead of spawning a hung duplicate.
+    pub fn focus_existing_window(title: &str) {
+        unsafe {
+            if let Ok(user32) = libloading::Library::new("user32.dll") {
+                let find_window: libloading::Symbol<
+                    unsafe extern "system" fn(*const u16, *const u16) -> isize,
+                > = match user32.get(b"FindWindowW".as_slice()) {
+                    Ok(f) => f,
+                    Err(_) => return,
+                };
+                let set_foreground: libloading::Symbol<
+                    unsafe extern "system" fn(isize) -> i32,
+                > = match user32.get(b"SetForegroundWindow".as_slice()) {
+                    Ok(f) => f,
+                    Err(_) => return,
+                };
+                let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+                let hwnd = find_window(std::ptr::null(), title_wide.as_ptr());
+                if hwnd != 0 {
+                    let _ = set_foreground(hwnd);
+                }
+            }
+        }
+    }
+
     pub fn set_proxy_registry(enabled: bool) -> Result<(), String> {
         use winreg::enums::*;
         use winreg::RegKey;
@@ -96,6 +123,7 @@ mod windows_api {
     pub fn set_proxy_registry(_: bool) -> Result<(), String> { Err("Windows-only".into()) }
     pub fn install_ca_cert() -> Result<String, String> { Err("Windows-only".into()) }
     pub fn log_dir() -> PathBuf { PathBuf::from("/tmp/hebed-proxy") }
+    pub fn focus_existing_window(_: &str) {}
 }
 
 // ─── Helpers ─────────────────────────────────────────────
@@ -635,6 +663,52 @@ fn check_process_alive(_pid: u32) -> bool {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ─── Single-instance guard ──────────────────────────────────────────────
+    // If another proxy_mvp instance is already running, its WebView2 process
+    // holds the profile lock in %LOCALAPPDATA%\com.hebed.proxy\EBWebView. A
+    // second instance then blocks on environment/profile init: the window
+    // opens but never responds ("Application Hang", no console.log). Instead
+    // of hanging, detect the running instance via a named mutex and exit
+    // immediately (Windows closes the new process silently).
+    #[cfg(target_os = "windows")]
+    {
+        use std::ffi::c_void;
+        let kernel32 = unsafe { libloading::Library::new("kernel32.dll").ok() };
+        let already_running = kernel32.as_ref().and_then(|lib| {
+            unsafe {
+                let create_mutex: libloading::Symbol<
+                    unsafe extern "system" fn(*const u16, i32, *const u16) -> *mut c_void,
+                > = lib.get(b"CreateMutexW".as_slice()).ok()?;
+                let get_last_error: libloading::Symbol<unsafe extern "system" fn() -> u32> =
+                    lib.get(b"GetLastError".as_slice()).ok()?;
+                let name: Vec<u16> = "Local\\com.hebed.proxy.single_instance"
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                let h = create_mutex(std::ptr::null(), 0, name.as_ptr());
+                if h.is_null() {
+                    return Some(false); // cannot create — allow launch
+                }
+                let exists = get_last_error() == 183; // ERROR_ALREADY_EXISTS
+                if !exists {
+                    // Keep the handle alive for the whole process lifetime so
+                    // the mutex stays owned while this instance runs.
+                    std::mem::forget(h);
+                }
+                Some(exists)
+            }
+        });
+        if already_running == Some(true) {
+            // Another instance is running. Focus its window instead of
+            // launching a hung duplicate.
+            windows_api::focus_existing_window("Hebed Proxy");
+            return;
+        }
+    }
+    start_app();
+}
+
+fn start_app() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
